@@ -1,0 +1,581 @@
+# TokenLang Specification v3.0
+
+*(Note: v3.0 introduces a major syntax change from </keyword> to ;;keyword;;. v2.4 added ;;fetch_url;;. v2.3 implemented advanced features. v2.2 added ;;help;;. v2.1 shortened tokens.)*
+
+## 1. Introduction
+
+TokenLang v3.0 is a structured command language designed for interacting with AI systems and data sources. It builds upon previous versions by adding features for enhanced data manipulation (SQL-like commands), improved control flow (including loops and switch cases), explicit error handling (including try/catch blocks), transaction management, variable operations, external API calls, direct remote URL fetching, better variable management, user interaction, a help system, and other functionalities.
+
+This version introduces a **new token syntax `;;keyword;;`** for improved clarity or parsing requirements, replacing the previous `</keyword>` format, while maintaining shortened tokens for efficiency.
+
+## 2. Core Concepts & Rules
+
+These fundamental rules govern how TokenLang commands are interpreted and executed.
+
+**2.1. Command Structure:** *(Syntax Updated)*
+* All commands begin with a token in the format: `;;token;; <content> [-flags]`
+* `<content>`: The primary data or subject the command acts upon.
+* `[-flags]`: Optional modifiers (e.g., `-lang=fr`, `-scope=user`). Flags use a key-value format (`-key=value`) or boolean presence (`-async`).
+
+**2.2. Token Chaining:**
+* Commands can be chained using the pipe operator (`|`). The standard output (stdout) of one command becomes the standard input (stdin) for the next.
+    * Example: `;;get;; users | ;;where;; status='active' | ;;sel;; name, email` *(Syntax Updated)*
+
+**2.3. Variables:**
+* Variables act as placeholders (e.g., `${user_location}`, `${userId}`).
+* **Explicit Setting:** Variables *must* be defined before use via `;;set;;`. Unset variables evaluate to an empty string or trigger an error if context requires a value. *(Syntax Updated)*
+* **Scope:** Variables can have scopes, defined during setting (e.g., `-scope=session` (default), `-scope=user`). Session scope lasts for the current interaction; user scope might persist across sessions (system-dependent).
+* **Types:** Variables can have types hinted during setting (e.g., `-type=string` (default), `-type=number`, `-type=boolean`, `-type=list`, `-type=object`). The system should attempt type coercion where appropriate but report errors on incompatible operations. See `;;eval;;` for operations. *(Syntax Updated)*
+* **No Auto-Filling:** The system must *never* assume, infer, or auto-fill variable values.
+
+**2.4. Error Handling (Basic):**
+* Failed commands *must* produce a standardized error output on standard error (stderr), distinct from standard output (stdout).
+* Error Output Format (JSON recommended):
+    ```json
+    {
+      "error_code": "ERR_INVALID_SYNTAX | ERR_MISSING_PARAM | ERR_EXECUTION_FAILED | ERR_PERMISSION_DENIED | ERR_VAR_NOT_SET | ERR_TX_ACTIVE | ERR_NETWORK | ERR_TIMEOUT | ...",
+      "message": "Descriptive error message.",
+      "details": { /* Optional: Additional context */ }
+    }
+    ```
+* Chained commands stop execution upon encountering an error unless handled by `;;try;;`/`;;catch;;`. *(Syntax Updated)*
+
+**2.5. Control Flow:**
+* **Conditionals:** Basic conditional execution is supported via `;;if;;`, `;;else;;`, `;;endif;;`. *(Syntax Updated)*
+    * Example: `;;get;; user_prefs | ;;if;; ${darkModeEnabled} == true | ;;ctx;; { "theme": "dark" } | ;;else;; | ;;ctx;; { "theme": "light" } | ;;endif;;` *(Syntax Updated)*
+* **Loops:** Iteration is supported via `;;for;;` (over lists/ranges) and `;;while;;` (condition-based). `;;break;;` and `;;continue;;` control loop flow. Blocks end with `;;endfor;;` or `;;endwhile;;`. *(Syntax Updated)*
+    * Example (for): `;;set;; names = '["Aeloria", "Kael", "Lyra"]' -type=list | ;;for;; name IN ${names} | ;;gen;; Processing god: ${name} | ;;endfor;;` *(Syntax Updated)*
+    * Example (while): `;;set;; i = 0 | ;;while;; ${i} < 3 | ;;gen;; Iteration ${i} | ;;eval;; i = ${i} + 1 | ;;endwhile;;` *(Syntax Updated)*
+* **Switch Cases:** Multi-way branching based on a value using `;;switch;;`, `;;case;;`, `;;default;;`, `;;endswitch;;`. *(Syntax Updated)*
+    * Example: `;;switch;; ${status_code} | ;;case;; 200 | ;;gen;; Success | ;;break;; | ;;case;; 404 | ;;gen;; Not found | ;;break;; | ;;default;; | ;;gen;; Other error: ${status_code} | ;;endswitch;;` *(Syntax Updated)*
+
+**2.6. Asynchronous Execution:**
+* Commands can be marked for asynchronous execution using the `-async` flag where applicable (e.g., `;;gen;;`, `;;img;;`, `;;api;;`, `;;fetch_url;;`). *(Syntax Updated)*
+* The system needs a mechanism (e.g., job IDs, callbacks - TBD in implementation) to handle results from async operations.
+
+**2.7. Permissions & Security:**
+* Command execution is subject to permissions. The underlying system is responsible for verifying if the user/session has the right to execute a command, especially those affecting data (`;;ins;;`, `;;upd;;`, `;;del;;`, `;;get;;`, `;;writef;;`) or system settings, or accessing network resources (`;;api;;`, `;;fetch_url;;`). *(Syntax Updated)*
+* Permission errors should use the standardized error output (`ERR_PERMISSION_DENIED`).
+
+**2.8. JSON Schema Validation:**
+* Tokens producing structured output (especially `;;json;;`, `;;get;;`, `;;table;;`) should ideally validate their output against a predefined JSON schema where applicable, ensuring consistency. This can be triggered by a flag (e.g., `-vschema=schemaName`). *(Syntax Updated)*
+
+**2.9. Transactions:**
+* Data manipulation commands (`;;ins;;`, `;;upd;;`, `;;del;;`) can be grouped into atomic transactions using `;;begin_tx;;`, `;;commit_tx;;`, and `;;rollback_tx;;`. *(Syntax Updated)*
+* All commands between `;;begin_tx;;` and `;;commit_tx;;` or `;;rollback_tx;;` are part of the transaction. *(Syntax Updated)*
+* Nested transactions may not be supported initially. Committing or rolling back ends the current transaction block.
+
+**2.10. Advanced Error Handling (Try/Catch):**
+* Blocks of commands can be wrapped in `;;try;;`...`;;catch;;`...`;;finally;;`...`;;endtry;;` structures. *(Syntax Updated)*
+* Errors occurring within the `;;try;;` block transfer control to the `;;catch;;` block (if present). *(Syntax Updated)*
+* The `;;catch;;` block can optionally capture error details into a variable. *(Syntax Updated)*
+* The `;;finally;;` block (if present) executes regardless of whether an error occurred or was caught. *(Syntax Updated)*
+* If an error occurs and there is no matching `;;catch;;`, it propagates outwards (potentially stopping script execution unless caught by an outer `;;try;;`). *(Syntax Updated)*
+
+## 3. Token Definitions
+
+Tokens define the specific actions the system can perform.
+
+---
+
+**🔹 ;;gen;;** *(Syntax Updated)*
+* **Description:** Generates text content based on the given context/prompt.
+* **Syntax:** `;;gen;; <prompt_or_context> [-model=model_name] [-maxtok=N] [-temp=T] [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;gen;; Write a short description of Aeloria, the Weaver of Fate -maxtok=100` *(Syntax Updated)*
+* **Action:** `generate_text`
+
+---
+
+**🔹 ;;trans;;** *(Syntax Updated)*
+* **Description:** Translates text to a specified language.
+* **Syntax:** `;;trans;; <text_to_translate> -lang=<target_language_code>`
+* **Parameters:** (unchanged)
+* **Example:** `;;trans;; Hello world -lang=es` *(Syntax Updated)*
+* **Action:** `translate_text`
+
+---
+
+**🔹 ;;sum;;** *(Syntax Updated)*
+* **Description:** Summarizes the given text.
+* **Syntax:** `;;sum;; <text_to_summarize> [-len=short|medium|long] [-fmt=bullet|paragraph]`
+* **Parameters:** (unchanged)
+* **Example:** `;;sum;; <long_article_content> -len=short -fmt=bullet` *(Syntax Updated)*
+* **Action:** `summarize_text`
+
+---
+
+**🔹 ;;ans;;** *(Syntax Updated)*
+* **Description:** Answers a question based on provided context or general knowledge.
+* **Syntax:** `;;ans;; <question> [-ctx=<context_text_or_variable>]`
+* **Parameters:** (unchanged)
+* **Example:** `;;ans;; What is the role of Chronos in the Aethelgard pantheon? -ctx=${pantheon_data}` *(Syntax Updated)*
+* **Action:** `answer_question`
+
+---
+
+**🔹 ;;cls;;** *(Syntax Updated)*
+* **Description:** Classifies text into predefined categories.
+* **Syntax:** `;;cls;; <text_to_classify> -cat=<category_type>`
+* **Parameters:** (unchanged)
+* **Example:** `;;cls;; This service is terrible -cat=sentiment` *(Syntax Updated)*
+* **Action:** `classify_text`
+
+---
+
+**🔹 ;;code;;** *(Syntax Updated)*
+* **Description:** Generates code in a specified language.
+* **Syntax:** `;;code;; <description_or_prompt> -lang=<programming_language> [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;code;; Function to calculate factorial in Python -lang=python` *(Syntax Updated)*
+* **Action:** `generate_code`
+
+---
+
+**🔹 ;;xtr;;** *(Syntax Updated)*
+* **Description:** Extracts specific types of information from text.
+* **Syntax:** `;;xtr;; <text_to_extract_from> -type=<info_type>`
+* **Parameters:** (unchanged)
+* **Example:** `;;xtr;; Meeting scheduled for April 15th with John Doe in Austin. -type=dates` *(Syntax Updated)*
+* **Action:** `extract_information`
+
+---
+
+**Data Query & Manipulation Tokens**
+
+**🔹 ;;sel;;** *(Syntax Updated)*
+* **Description:** Specifies the fields/columns to retrieve in a query. Part of `;;get;;` chain.
+* **Syntax:** `;;sel;; <field1>,<field2>,...`
+* **Example:** `;;sel;; name, email, status` *(Syntax Updated)*
+* **Action:** `query_builder_select`
+
+---
+
+**🔹 ;;from;;** *(Syntax Updated)*
+* **Description:** Specifies the data source (table, collection, etc.). Part of query chain.
+* **Syntax:** `;;from;; <source_name>`
+* **Example:** `;;from;; user_database.customers` *(Syntax Updated)*
+* **Action:** `query_builder_from`
+
+---
+
+**🔹 ;;where;;** *(Syntax Updated)*
+* **Description:** Specifies filtering conditions (WHERE clause). Part of query chain. Supports operators (`=`, `!=`, `>`, `<`, `>=`, `<=`, `CONTAINS`, `STARTSWITH`, `ENDSWITH`) and logic (`AND`, `OR`, `NOT`). Use `${var}` for variables.
+* **Syntax:** `;;where;; <condition_expression>`
+* **Example:** `;;where;; city = "${user_location}" AND status = 'active' OR signup_date >= '2024-01-01'` *(Syntax Updated)*
+* **Action:** `query_builder_where`
+
+---
+
+**🔹 ;;sort;;** *(Syntax Updated)*
+* **Description:** Specifies sorting order (ORDER BY clause). Part of query chain.
+* **Syntax:** `;;sort;; <field_name> [-dir=ASC|DESC]`
+* **Parameters:** (unchanged)
+* **Example:** `;;sort;; lastName -dir=ASC` *(Syntax Updated)*
+* **Action:** `query_builder_orderby`
+
+---
+
+**🔹 ;;lim;;** *(Syntax Updated)*
+* **Description:** Limits the number of results (LIMIT clause). Part of query chain.
+* **Syntax:** `;;lim;; <number_of_results>`
+* **Example:** `;;lim;; 10` *(Syntax Updated)*
+* **Action:** `query_builder_limit`
+
+---
+
+**🔹 ;;skip;;** *(Syntax Updated)*
+* **Description:** Skips a number of results (OFFSET clause). Part of query chain.
+* **Syntax:** `;;skip;; <number_to_skip>`
+* **Example:** `;;skip;; 20` *(Syntax Updated)*
+* **Action:** `query_builder_offset`
+
+---
+
+**🔹 ;;get;;** *(Syntax Updated)*
+* **Description:** Executes the composed query built using `;;from;;`, `;;where;;`, etc., or via direct parameters. Output should conform to JSON schema if requested.
+* **Syntax (Chained):** `;;from;; ... | ;;where;; ... | ;;get;;`
+* **Syntax (Direct):** `;;get;; <source> [-where=<filter_expr>] [-sel=<fields>] [-sort=<field:dir>] [-lim=N] [-skip=M] [-vschema=schemaName]`
+* **Example (Chained):** `;;from;; contacts | ;;where;; city = "${user_location}" | ;;lim;; 5 | ;;sel;; name | ;;get;;` *(Syntax Updated)*
+* **Example (Direct):** `;;get;; contacts -where="city='${user_location}'" -lim=5 -sel=name` *(Syntax Updated)*
+* **Action:** `execute_query`
+
+---
+
+**🔹 ;;ins;;** *(Syntax Updated)*
+* **Description:** Inserts one or more new records into a specified data source.
+* **Syntax:** `;;ins;; <source_name> -data=<json_object_or_array>`
+* **Parameters:** (unchanged)
+* **Example:** `;;ins;; customers -data='{"name": "New Co", "city": "Sonterra, Texas", "status": "pending"}'` *(Syntax Updated)*
+* **Action:** `execute_insert`
+
+---
+
+**🔹 ;;upd;;** *(Syntax Updated)*
+* **Description:** Updates existing records in a data source based on filter conditions.
+* **Syntax:** `;;upd;; <source_name> -where=<filter_expression> -set=<json_object_of_updates>`
+* **Parameters:** (unchanged)
+* **Example:** `;;upd;; customers -where="name = 'New Co' AND city = '${user_location}'" -set='{"status": "active"}'` *(Syntax Updated)*
+* **Action:** `execute_update`
+
+---
+
+**🔹 ;;del;;** *(Syntax Updated)*
+* **Description:** Deletes records from a data source based on filter conditions. Use with caution!
+* **Syntax:** `;;del;; <source_name> -where=<filter_expression>`
+* **Parameters:** (unchanged)
+* **Example:** `;;del;; logs -where="timestamp < '2023-01-01'"` *(Syntax Updated)*
+* **Action:** `execute_delete`
+
+---
+
+**🔹 ;;begin_tx;;** *(Syntax Updated)*
+* **Description:** Begins a database transaction block. Subsequent `;;ins;;`, `;;upd;;`, `;;del;;` commands are part of this transaction until committed or rolled back.
+* **Syntax:** `;;begin_tx;;`
+* **Example:** `;;begin_tx;; | ;;ins;; orders -data='{...}' | ;;upd;; inventory -where="id=1" -set='{"qty": ${qty}-1}' | ;;commit_tx;;` *(Syntax Updated)*
+* **Action:** `transaction_begin`
+
+---
+
+**🔹 ;;commit_tx;;** *(Syntax Updated)*
+* **Description:** Commits the current active database transaction, making changes permanent. Ends the transaction block.
+* **Syntax:** `;;commit_tx;;`
+* **Example:** See `;;begin_tx;;`
+* **Action:** `transaction_commit`
+
+---
+
+**🔹 ;;rollback_tx;;** *(Syntax Updated)*
+* **Description:** Rolls back the current active database transaction, discarding changes made since `;;begin_tx;;`. Ends the transaction block.
+* **Syntax:** `;;rollback_tx;;`
+* **Example:** `;;begin_tx;; | ;;ins;; temp_data -data='{...}' | ;;if;; ${condition} == false | ;;rollback_tx;; | ;;endif;; | ;;commit_tx;;` *(Syntax Updated)*
+* **Action:** `transaction_rollback`
+
+---
+
+**Configuration, Control & Variable Tokens**
+
+**🔹 ;;ctx;;** *(Syntax Updated)*
+* **Description:** Sets runtime context for the LLM or system (e.g., persona, system prompt additions, operational parameters).
+* **Syntax:** `;;ctx;; {<json_context_data>}`
+* **Example:** `;;ctx;; { "role": "translator", "lang_pair": "en-es", "formality": "formal" }` *(Syntax Updated)*
+* **Action:** `update_runtime_context`
+
+---
+
+**🔹 ;;set;;** *(Syntax Updated)*
+* **Description:** Sets a temporary variable for the current session or user scope.
+* **Syntax:** `;;set;; <variable_name> = <value> [-scope=session|user] [-type=string|number|boolean|list|object]`
+* **Parameters:** (unchanged)
+* **Example:** `;;set;; user_location = "Sonterra, Texas" -scope=user -type=string` *(Syntax Updated)*
+* **Example:** `;;set;; recent_ids = '[101, 102, 105]' -type=list` *(Syntax Updated)*
+* **Action:** `set_variable_value`
+
+---
+
+**🔹 ;;eval;;** *(Syntax Updated)*
+* **Description:** Evaluates a simple expression and assigns the result to a variable. Supports basic arithmetic (`+`, `-`, `*`, `/`), comparisons, and potentially string concatenation.
+* **Syntax:** `;;eval;; <variable_name> = <expression>`
+* **Parameters:** (unchanged)
+* **Example (Arithmetic):** `;;set;; counter = 0 | ;;eval;; counter = ${counter} + 1` *(Syntax Updated)*
+* **Example (String Concat):** `;;set;; greeting = "Hello" | ;;eval;; full_greeting = ${greeting} + ", ${user_name}!"` *(Syntax Updated)*
+* **Action:** `evaluate_expression`
+
+---
+
+**Multimedia & Structured Output Tokens**
+
+**🔹 ;;img;;** *(Syntax Updated)*
+* **Description:** Generates an image based on a description.
+* **Syntax:** `;;img;; <prompt> [-style=<style_preset>] [-ar=ratio] [-neg=<text>] [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;img;; A futuristic cityscape in Sonterra, Texas at sunset -style=photorealistic -ar=16:9` *(Syntax Updated)*
+* **Action:** `generate_image`
+
+---
+
+**🔹 ;;doc;;** *(Syntax Updated)*
+* **Description:** Generates document output (e.g., PDF, DOCX) from data or description.
+* **Syntax:** `;;doc;; <description_or_data> -fmt=<pdf|docx|...> [-tpl=<template_name>] [-style=formal|informal]`
+* **Parameters:** (unchanged)
+* **Example:** `;;doc;; ${quarterly_sales_data} -fmt=pdf -tpl=sales_report -style=formal` *(Syntax Updated)*
+* **Action:** `generate_document`
+
+---
+
+**🔹 ;;vid;;** *(Syntax Updated)*
+* **Description:** Generates video output from a description or script.
+* **Syntax:** `;;vid;; <description_or_script> -res=<1080p|720p|...> [-style=animation|live_action_sim] [-narr=true|false|voice_id] [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;vid;; Animated explanation of photosynthesis -res=1080p -narr=true -style=animation -async` *(Syntax Updated)*
+* **Action:** `generate_video`
+
+---
+
+**🔹 ;;aud;;** *(Syntax Updated)*
+* **Description:** Generates audio output from a description or script.
+* **Syntax:** `;;aud;; <description_or_script> -fmt=<mp3|wav|...> [-style=upbeat|calm|podcast_intro] [-voice=voice_id] [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;aud;; Podcast intro theme music -fmt=mp3 -style=upbeat` *(Syntax Updated)*
+* **Action:** `generate_audio`
+
+---
+
+**🔹 ;;json;;** *(Syntax Updated)*
+* **Description:** Outputs data explicitly in JSON format. Useful at the end of a chain. Validates against schema if requested.
+* **Syntax:** `;;json;; <input_data_or_variable> [-vschema=schemaName]`
+* **Example:** `;;get;; users -where="id=123" | ;;json;; -vschema=userProfileSchema` *(Syntax Updated)*
+* **Action:** `format_as_json`
+
+---
+
+**🔹 ;;table;;** *(Syntax Updated)*
+* **Description:** Outputs data formatted as a table (e.g., Markdown table, or specific format for UI). Validates against schema if requested.
+* **Syntax:** `;;table;; <input_data_or_variable> [-fmt=markdown|html|...] [-vschema=schemaName]`
+* **Example:** `;;get;; products -lim=10 | ;;table;; -fmt=markdown` *(Syntax Updated)*
+* **Action:** `format_as_table`
+
+---
+
+**Utility, Control Flow & Help Tokens**
+
+**🔹 ;;if;;** *(Syntax Updated)*
+* **Description:** Starts a conditional block.
+* **Syntax:** `;;if;; <condition_expression>`
+* **Action:** `control_flow_if`
+
+---
+
+**🔹 ;;else;;** *(Syntax Updated)*
+* **Description:** Executes if the preceding `;;if;;` condition was false.
+* **Syntax:** `;;else;;`
+* **Action:** `control_flow_else`
+
+---
+
+**🔹 ;;endif;;** *(Syntax Updated)*
+* **Description:** Ends an `;;if;;` or `;;if;; ;;else;;` block.
+* **Syntax:** `;;endif;;`
+* **Action:** `control_flow_endif`
+
+---
+
+**🔹 ;;for;;** *(Syntax Updated)*
+* **Description:** Iterates over items in a list variable or a range. Assigns each item to a loop variable. Block ends with `;;endfor;;`.
+* **Syntax (List):** `;;for;; <loop_var> IN ${list_variable}`
+* **Syntax (Range):** `;;for;; <loop_var> FROM <start> TO <end> [STEP <step>]`
+* **Parameters:** (unchanged)
+* **Example (List):** `;;set;; gods = '["Aeloria", "Kael"]' -type=list | ;;for;; god IN ${gods} | ;;gen;; God: ${god} | ;;endfor;;` *(Syntax Updated)*
+* **Example (Range):** `;;for;; i FROM 1 TO 3 | ;;gen;; Number ${i} | ;;endfor;;` *(Syntax Updated)*
+* **Action:** `control_flow_for`
+
+---
+
+**🔹 ;;while;;** *(Syntax Updated)*
+* **Description:** Executes a block of commands as long as a condition is true. Block ends with `;;endwhile;;`. Use `;;break;;` or ensure condition eventually becomes false to avoid infinite loops.
+* **Syntax:** `;;while;; <condition_expression>`
+* **Parameters:** (unchanged)
+* **Example:** `;;set;; i = 0 | ;;while;; ${i} < 3 | ;;gen;; i is ${i} | ;;eval;; i = ${i} + 1 | ;;endwhile;;` *(Syntax Updated)*
+* **Action:** `control_flow_while`
+
+---
+
+**🔹 ;;break;;** *(Syntax Updated)*
+* **Description:** Exits the innermost `;;for;;` or `;;while;;` loop immediately.
+* **Syntax:** `;;break;;`
+* **Example:** `;;for;; i FROM 1 TO 10 | ;;if;; ${i} == 5 | ;;break;; | ;;endif;; | ;;gen;; ${i} | ;;endfor;;` *(Syntax Updated)*
+* **Action:** `control_flow_break`
+
+---
+
+**🔹 ;;continue;;** *(Syntax Updated)*
+* **Description:** Skips the rest of the current iteration of the innermost `;;for;;` or `;;while;;` loop and proceeds to the next iteration.
+* **Syntax:** `;;continue;;`
+* **Example:** `;;for;; i FROM 1 TO 5 | ;;if;; ${i} == 3 | ;;continue;; | ;;endif;; | ;;gen;; Processing ${i} | ;;endfor;;` *(Syntax Updated)*
+* **Action:** `control_flow_continue`
+
+---
+
+**🔹 ;;endfor;;** *(Syntax Updated)*
+* **Description:** Marks the end of a `;;for;;` loop block.
+* **Syntax:** `;;endfor;;`
+* **Action:** `control_flow_endfor`
+
+---
+
+**🔹 ;;endwhile;;** *(Syntax Updated)*
+* **Description:** Marks the end of a `;;while;;` loop block.
+* **Syntax:** `;;endwhile;;`
+* **Action:** `control_flow_endwhile`
+
+---
+
+**🔹 ;;switch;;** *(Syntax Updated)*
+* **Description:** Starts a switch block, evaluating an expression. Use with `;;case;;`, `;;default;;`, `;;endswitch;;`. Execution jumps to the first matching `;;case;;` or `;;default;;`. Remember `;;break;;` to prevent fallthrough if needed.
+* **Syntax:** `;;switch;; <expression>`
+* **Parameters:** (unchanged)
+* **Example:** See Section 2.5.
+* **Action:** `control_flow_switch`
+
+---
+
+**🔹 ;;case;;** *(Syntax Updated)*
+* **Description:** Defines a case within a `;;switch;;` block. Executes if the switch expression matches this case's value.
+* **Syntax:** `;;case;; <value>`
+* **Parameters:** (unchanged)
+* **Example:** See Section 2.5.
+* **Action:** `control_flow_case`
+
+---
+
+**🔹 ;;default;;** *(Syntax Updated)*
+* **Description:** Defines the default block within a `;;switch;;` statement, executed if no `;;case;;` matches.
+* **Syntax:** `;;default;;`
+* **Example:** See Section 2.5.
+* **Action:** `control_flow_default`
+
+---
+
+**🔹 ;;endswitch;;** *(Syntax Updated)*
+* **Description:** Marks the end of a `;;switch;;` block.
+* **Syntax:** `;;endswitch;;`
+* **Action:** `control_flow_endswitch`
+
+---
+
+**🔹 ;;try;;** *(Syntax Updated)*
+* **Description:** Starts a block of commands where errors might occur and can be caught. Use with `;;catch;;`, `;;finally;;`, `;;endtry;;`.
+* **Syntax:** `;;try;;`
+* **Example:** `;;try;; | ;;del;; sensitive_data -where="id=${id}" | ;;catch;; -err=e | ;;gen;; Failed to delete: ${e.message} | ;;finally;; | ;;gen;; Cleanup step | ;;endtry;;` *(Syntax Updated)*
+* **Action:** `error_handling_try`
+
+---
+
+**🔹 ;;catch;;** *(Syntax Updated)*
+* **Description:** Starts a block to handle errors caught from the preceding `;;try;;` block. Optionally captures the error details into a variable.
+* **Syntax:** `;;catch;; [-err=<variable_name>]`
+* **Parameters:** (unchanged)
+* **Example:** See `;;try;;`
+* **Action:** `error_handling_catch`
+
+---
+
+**🔹 ;;finally;;** *(Syntax Updated)*
+* **Description:** Starts a block that executes after `;;try;;` and `;;catch;;` blocks, regardless of whether an error occurred or was caught.
+* **Syntax:** `;;finally;;`
+* **Example:** See `;;try;;`
+* **Action:** `error_handling_finally`
+
+---
+
+**🔹 ;;endtry;;** *(Syntax Updated)*
+* **Description:** Marks the end of a `;;try;;`...`;;catch;;`...`;;finally;;` structure.
+* **Syntax:** `;;endtry;;`
+* **Action:** `error_handling_endtry`
+
+---
+
+**🔹 ;;ask;;** *(Syntax Updated)*
+* **Description:** Prompts the user for input and stores it in a variable. Execution pauses until input is received.
+* **Syntax:** `;;ask;; <prompt_message> -var=<variable_name> [-type=string|number|boolean] [-scope=session|user]`
+* **Parameters:** (unchanged)
+* **Example:** `;;ask;; Please enter your API key: -var=userApiKey -type=string -scope=session` *(Syntax Updated)*
+* **Action:** `request_user_input`
+
+---
+
+**🔹 ;;insp;;** *(Syntax Updated)*
+* **Description:** Inspects the current system state or a specific variable's value and type.
+* **Syntax:** `;;insp;; [variable_name | 'context' | 'state']`
+* **Parameters:** (unchanged)
+* **Example:** `;;insp;; user_location` *(Syntax Updated)*
+* **Example:** `;;insp;; context` *(Syntax Updated)*
+* **Action:** `inspect_state`
+
+---
+
+**🔹 ;;vars;;** *(Syntax Updated)*
+* **Description:** Lists currently defined variables and their scopes/types.
+* **Syntax:** `;;vars;; [-scope=session|user|all]`
+* **Parameters:** (unchanged)
+* **Example:** `;;vars;; -scope=session` *(Syntax Updated)*
+* **Action:** `list_variables`
+
+---
+
+**🔹 ;;readf;;** *(Syntax Updated)*
+* **Description:** Reads content from a specified file path accessible to the system.
+* **Syntax:** `;;readf;; <file_path> -var=<variable_name>`
+* **Parameters:** (unchanged)
+* **Example:** `;;readf;; /path/to/config.json -var=configFileContent` *(Syntax Updated)*
+* **Action:** `file_read`
+
+---
+
+**🔹 ;;writef;;** *(Syntax Updated)*
+* **Description:** Writes content (from text or variable) to a specified file path. Requires appropriate permissions.
+* **Syntax:** `;;writef;; <file_path> -data=<text_or_variable> [-ow=true|false]`
+* **Parameters:** (unchanged)
+* **Example:** `;;writef;; /path/to/output.log -data="Process completed: ${timestamp}"` *(Syntax Updated)*
+* **Action:** `file_write`
+
+---
+
+**🔹 ;;def;;** *(Syntax Updated)*
+* **Description:** (Conceptual) Defines a new custom token based on a sequence of existing tokens or external script/API call. The exact mechanism is implementation-dependent.
+* **Syntax:** `;;def;; <new_token_name> AS <token_sequence_or_script_definition>`
+* **Example:** `;;def;; ;;get_active_users;; AS ;;from;; users | ;;where;; status='active' | ;;get;;` *(Syntax Updated)*
+* **Action:** `define_custom_token`
+
+---
+
+**🔹 ;;help;;** *(Syntax Updated)*
+* **Description:** Displays help information for TokenLang commands. Shows a list of all commands or details for a specific command.
+* **Syntax:** `;;help;; [token_name]`
+* **Parameters:**
+    * `token_name` (string, optional): The specific token (e.g., `gen`, `get`, `set` - without the delimiters) to get detailed help for. If omitted, lists all available tokens and brief descriptions.
+* **Example (List all):** `;;help;;` *(Syntax Updated)*
+* **Example (Specific):** `;;help;; gen` *(Syntax Updated)*
+* **Example (Specific):** `;;help;; where` *(Syntax Updated)*
+* **Action:** `display_help`
+
+---
+
+**External Integration Tokens**
+
+**🔹 ;;fetch_url;;** *(Syntax Updated)*
+* **Description:** Fetches content directly from a remote URL (typically via HTTP GET) and stores it in a variable. Simpler alternative to `;;api;;` for basic content retrieval.
+* **Syntax:** `;;fetch_url;; <url> -var=<variable_name> [-err_var=<error_variable>] [-headers=<json_obj|var>] [-timeout=seconds] [-async]`
+* **Parameters:** (unchanged)
+* **Example:** `;;fetch_url;; https://example.com/some/data.txt -var=remote_content -err_var=fetch_error` *(Syntax Updated)*
+* **Example (JSON):** `;;fetch_url;; https://api.example.com/status -headers='{"Accept":"application/json"}' -var=status_json` *(Syntax Updated)*
+* **Action:** `fetch_remote_url`
+
+---
+
+**🔹 ;;api;;** *(Syntax Updated)*
+* **Description:** Makes a general external HTTP API call (GET, POST, PUT, DELETE, etc.). More flexible than `;;fetch_url;;` for complex interactions.
+* **Syntax:** `;;api;; <url> [-method=GET|POST|PUT|DELETE|...] [-headers=<json_obj|var>] [-body=<string|json_obj|var>] [-var=<response_var>] [-err_var=<error_var>] [-async]`
+* **Parameters:** (unchanged)
+* **Example (GET):** `;;api;; https://api.example.com/data -var=api_response` *(Syntax Updated)*
+* **Example (POST):** `;;set;; payload = '{"name":"Kael", "domain":"War"}' -type=object | ;;api;; https://api.example.com/gods -method=POST -headers='{"Content-Type":"application/json"}' -body=${payload} -var=post_result -err_var=api_error` *(Syntax Updated)*
+* **Action:** `external_api_call`
+
+---
+
+## 4. Extensibility
+
+TokenLang v3.0 is designed with extensibility in mind. Implementations can:
+* Add new system-specific tokens.
+* Allow users to define custom tokens/macros using `;;def;;` (or a similar mechanism) for complex or repetitive tasks. *(Syntax Updated)*
+
+## 5. Future Considerations
+
+* More granular type system and operations (e.g., specific list/object manipulation functions).
+* Built-in support for common data formats beyond JSON (e.g., XML, YAML parsing/generation).
+* Enhanced debugging capabilities (e.g., step-by-step execution, breakpoints).
+* More sophisticated context management.
+* Native support for parallel execution blocks.
+
+
+
